@@ -74,19 +74,19 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
     public static final String REGISTER_TRADE_TOPIC = "register-trade-topic";
 
     public static void initSharding(ActorSystem<?> system) {
-        //    ClusterSharding.get(system).init(Entity.of(TypeKey, entityContext ->
-        //      WeatherStation.create(entityContext.getEntityId())
-        //    ));
+//            ClusterSharding.get(system).init(Entity.of(TypeKey, entityContext ->
+//              WeatherStation.create(entityContext.getEntityId())
+//            ));
 
         String groupId = "register-trade-topic-group-id";
-        EntityTypeKey<User.Command> typeKey = EntityTypeKey.create(User.Command.class, groupId);
+        EntityTypeKey<User> typeKey = EntityTypeKey.create(User.class, groupId);
 
-        CompletionStage<KafkaClusterSharding.KafkaShardingNoEnvelopeExtractor<User.Command>> messageExtractor =
+        CompletionStage<KafkaClusterSharding.KafkaShardingNoEnvelopeExtractor<User>> messageExtractor =
                 KafkaClusterSharding.get(system)
                         .messageExtractorNoEnvelope(
                                 REGISTER_TRADE_TOPIC,
                                 Duration.ofSeconds(10),
-                                (User.Command msg) -> msg.getId(),
+                                (User msg) -> msg.id,
                                 ConsumerSettings.create(
                                         Adapter.toClassic(system), new StringDeserializer(), new StringDeserializer())
                                         .withBootstrapServers("localhost:9092")
@@ -99,6 +99,7 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
                         ClusterSharding.get(system)
                                 .init(
                                         Entity.of(typeKey, ctx -> userBehaviour(ctx.getEntityId()))
+//                                        Entity.of(typeKey, ctx -> WeatherStation.create(ctx.getEntityId()))
                                                 .withAllocationStrategy(
                                                         new ExternalShardAllocationStrategy(
                                                                 system, typeKey.name(), Timeout.create(Duration.ofSeconds(5))))
@@ -121,10 +122,14 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
                         .withRebalanceListener(Adapter.toClassic(rebalanceListener));
 
         Consumer.plainSource(consumerSettings, subscription)
-//                .via(userBusiness()) // put your business logic, or omit to just try starting the stream
-                .map(e -> new String(e.value()))
+                //.via(userBusiness()) // put your business logic, or omit to just try starting the stream
+                .map(e -> {
+                            String s = new String(e.value());
+                            System.out.println(s);
+                            return s;
+                        }
+                )
                 .runWith(Sink.ignore(), system);
-//                .runWith(Sink.ignore(), SystemMaterializer.get(system).materializer());
 
     }
 
@@ -147,7 +152,7 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
 //    private static Graph<akka.stream.FlowShape<org.apache.kafka.clients.consumer.ConsumerRecord<java.lang.String,byte[]>,T>, M> userBusiness() {
 //    }
 
-    private static Behavior<User.Command> userBehaviour(final String wsid) {
+    private static Behavior<User> userBehaviour(final String wsid) {
         return Behaviors.setup(context ->
                 new User(context, wsid)
         );

@@ -4,10 +4,10 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
 
-public class User extends AbstractBehavior<User.Command> {
+public class User extends AbstractBehavior<User> {
 
     @Override
-    public Receive<Command> createReceive() {
+    public Receive<User> createReceive() {
         System.out.println("*************************");
         System.out.println("****** PASSED HERE *******");
         System.out.println("*************************");
@@ -21,7 +21,7 @@ public class User extends AbstractBehavior<User.Command> {
 
     public final String id;
 
-    public User(ActorContext<Command> context, String entityId) {
+    public User(ActorContext<User> context, String entityId) {
         super(context);
         this.id = entityId;
         System.out.println("*************************");
