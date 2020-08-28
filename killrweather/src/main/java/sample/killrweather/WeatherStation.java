@@ -1,6 +1,5 @@
 package sample.killrweather;
 
-import akka.NotUsed;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
 import akka.actor.typed.Behavior;
@@ -13,6 +12,7 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.external.ExternalShardAllocationStrategy;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.Entity;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.kafka.AutoSubscription;
 import akka.kafka.ConsumerRebalanceEvent;
@@ -20,27 +20,10 @@ import akka.kafka.ConsumerSettings;
 import akka.kafka.Subscriptions;
 import akka.kafka.cluster.sharding.KafkaClusterSharding;
 import akka.kafka.javadsl.Consumer;
-import akka.stream.ClosedShape;
-import akka.stream.FanInShape2;
-import akka.stream.FlowShape;
-import akka.stream.Graph;
-import akka.stream.Outlet;
-import akka.stream.SystemMaterializer;
-import akka.stream.UniformFanInShape;
-import akka.stream.UniformFanOutShape;
-import akka.stream.javadsl.Broadcast;
-import akka.stream.javadsl.Flow;
-import akka.stream.javadsl.GraphDSL;
-import akka.stream.javadsl.Merge;
-import akka.stream.javadsl.RunnableGraph;
 import akka.stream.javadsl.Sink;
-import akka.stream.javadsl.Source;
-import akka.stream.javadsl.Zip;
 import akka.util.Timeout;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.typesafe.config.Config;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
@@ -49,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.CompletionStage;
 import java.util.stream.Collectors;
 
@@ -68,8 +52,13 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
     // these could also live elsewhere and the WeatherStation class be completely
     // oblivious to being used in sharding
 
+    private static final Random r = new Random();
+
+    public static final String groupId = "register-trade-topic-group-id";
+//    EntityTypeKey<User> TypeKey = EntityTypeKey.create(User.class, groupId);
+
     public static final EntityTypeKey<WeatherStation.Command> TypeKey =
-            EntityTypeKey.create(WeatherStation.Command.class, "WeatherStation");
+            EntityTypeKey.create(WeatherStation.Command.class, groupId); //"WeatherStation");
 
     public static final String REGISTER_TRADE_TOPIC = "register-trade-topic";
 
@@ -78,42 +67,39 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
 //              WeatherStation.create(entityContext.getEntityId())
 //            ));
 
-        String groupId = "register-trade-topic-group-id";
-        EntityTypeKey<User> typeKey = EntityTypeKey.create(User.class, groupId);
-
-        CompletionStage<KafkaClusterSharding.KafkaShardingNoEnvelopeExtractor<User>> messageExtractor =
+        CompletionStage<KafkaClusterSharding.KafkaShardingNoEnvelopeExtractor<WeatherStation.Command>> messageExtractor =
                 KafkaClusterSharding.get(system)
                         .messageExtractorNoEnvelope(
                                 REGISTER_TRADE_TOPIC,
                                 Duration.ofSeconds(10),
-                                (User msg) -> msg.id,
+                                (WeatherStation.Command msg) -> msg.getId(),
                                 ConsumerSettings.create(
                                         Adapter.toClassic(system), new StringDeserializer(), new StringDeserializer())
                                         .withBootstrapServers("localhost:9092")
                                         .withGroupId(
-                                                typeKey
+                                                TypeKey
                                                         .name()));
 
         messageExtractor.thenAccept(
                 extractor ->
                         ClusterSharding.get(system)
                                 .init(
-                                        Entity.of(typeKey, ctx -> userBehaviour(ctx.getEntityId()))
+                                        Entity.of(TypeKey, ctx -> create(ctx.getEntityId())) //userBehaviour(ctx.getEntityId()))
 //                                        Entity.of(typeKey, ctx -> WeatherStation.create(ctx.getEntityId()))
                                                 .withAllocationStrategy(
                                                         new ExternalShardAllocationStrategy(
-                                                                system, typeKey.name(), Timeout.create(Duration.ofSeconds(5))))
+                                                                system, TypeKey.name(), Timeout.create(Duration.ofSeconds(5))))
                                                 .withMessageExtractor(extractor)));
 
         akka.actor.typed.ActorRef<ConsumerRebalanceEvent> rebalanceListener =
-                KafkaClusterSharding.get(system).rebalanceListener(typeKey);
+                KafkaClusterSharding.get(system).rebalanceListener(TypeKey);
 
         ConsumerSettings<String, byte[]> consumerSettings =
                 ConsumerSettings.create(
                         Adapter.toClassic(system), new StringDeserializer(), new ByteArrayDeserializer())
                         .withBootstrapServers("localhost:9092")
                         .withGroupId(
-                                typeKey
+                                TypeKey
                                         .name()); // use the same group id as we used in the `EntityTypeKey` for `User`
 
         // pass the rebalance listener to the topic subscription
@@ -122,10 +108,13 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
                         .withRebalanceListener(Adapter.toClassic(rebalanceListener));
 
         Consumer.plainSource(consumerSettings, subscription)
-                //.via(userBusiness()) // put your business logic, or omit to just try starting the stream
+//                .via(userBusiness(system, 1)) // put your business logic, or omit to just try starting the stream
                 .map(e -> {
                             String s = new String(e.value());
                             System.out.println(s);
+
+                            userBusiness(system, r.nextInt(128) + 1, new Data(1234l, null, 33.44d, "aaaa"));
+
                             return s;
                         }
                 )
@@ -133,8 +122,13 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
 
     }
 
+    private static CompletionStage<WeatherStation.DataRecorded> userBusiness(ActorSystem<?> system, long wsid, WeatherStation.Data data) {
+        ClusterSharding sharding = ClusterSharding.get(system);
+        EntityRef<Command> ref = sharding.entityRefFor(WeatherStation.TypeKey, Long.toString(wsid));
+        return ref.ask(replyTo -> new WeatherStation.Record(data, System.currentTimeMillis(), replyTo), Duration.ofSeconds(10));
+    }
 
-//    private static Graph<FlowShape<ConsumerRecord<String, byte[]>, NotUsed>, SystemMaterializer> userBusiness() {
+    //    private static Graph<FlowShape<ConsumerRecord<String, byte[]>, NotUsed>, SystemMaterializer> userBusiness() {
 //
 //              return  GraphDSL.create(
 //                        b -> {
@@ -161,6 +155,7 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
 
     // actor commands and responses
     interface Command extends CborSerializable {
+        public String getId();
     }
 
     public static final class Record implements Command {
@@ -168,10 +163,16 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
         public final long processingTimestamp;
         public final ActorRef<DataRecorded> replyTo;
 
+
         public Record(Data data, long processingTimestamp, ActorRef<DataRecorded> replyTo) {
             this.data = data;
             this.processingTimestamp = processingTimestamp;
             this.replyTo = replyTo;
+        }
+
+        @Override
+        public String getId() {
+            return data.id;
         }
     }
 
@@ -189,6 +190,7 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
                     "wsid='" + wsid + '\'' +
                     '}';
         }
+
     }
 
     public static final class Query implements Command {
@@ -200,6 +202,11 @@ final class WeatherStation extends AbstractBehavior<WeatherStation.Command> {
             this.dataType = dataType;
             this.func = func;
             this.replyTo = replyTo;
+        }
+
+        @Override
+        public String getId() {
+            return dataType.name();
         }
     }
 
